@@ -28,6 +28,7 @@
  * - Reviewer: Claude Code (not Codex)
  */
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -65,6 +66,9 @@ function logError(msg) {
 // ─── Session ID ──────────────────────────────────────────────────────────────
 
 const SESSION_ID = `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+// Track most recent workspace root for graceful shutdown cleanup
+let lastWorkspaceRoot = null;
 
 // ─── Tool Definitions ───────────────────────────────────────────────────────
 
@@ -218,6 +222,7 @@ function handleDelegate(params) {
 
   const cwd = getCwd(params);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  lastWorkspaceRoot = workspaceRoot;
   const write = params.write !== false;
   const background = params.background === true;
   const model = params.model || null;
@@ -245,6 +250,7 @@ function handleDelegate(params) {
     background,
     resume,
     resumeSession,
+    timeout,
     sessionId: SESSION_ID,
     pid: null,
     logFile,
@@ -287,46 +293,51 @@ function handleDelegate(params) {
 
     child.on("exit", (code) => {
       const completedAt = new Date().toISOString();
-      if (code === 0 && fs.existsSync(resultFile)) {
-        try {
-          const parsed = JSON.parse(fs.readFileSync(resultFile, "utf8"));
+      try {
+        if (code === 0 && fs.existsSync(resultFile)) {
+          try {
+            const parsed = JSON.parse(fs.readFileSync(resultFile, "utf8"));
 
-          // Check for error status in agy JSON output
-          if (parsed.status === "ERROR") {
+            // Check for error status in agy JSON output
+            if (parsed.status === "ERROR") {
+              updateJob(workspaceRoot, {
+                id: jobId, status: "failed", phase: "failed", pid: null, completedAt,
+                errorMessage: parsed.error || "agy returned ERROR status"
+              });
+              appendLogLine(workspaceRoot, jobId, `Background task failed: ${parsed.error || "ERROR status"}`);
+              return;
+            }
+
             updateJob(workspaceRoot, {
-              id: jobId, status: "failed", phase: "failed", pid: null, completedAt,
-              errorMessage: parsed.error || "agy returned ERROR status"
+              id: jobId, status: "completed", phase: "completed", pid: null, completedAt,
+              result: parsed.response || "",
+              cost: null, // agy doesn't return cost
+              duration: parsed.duration_seconds || null,
+              sessionId: parsed.conversation_id || null,
+              errorMessage: null
             });
-            appendLogLine(workspaceRoot, jobId, `Background task failed: ${parsed.error || "ERROR status"}`);
-            return;
+            appendLogLine(workspaceRoot, jobId, "Background task completed.");
+          } catch {
+            updateJob(workspaceRoot, { id: jobId, status: "failed", phase: "failed", pid: null, completedAt, errorMessage: "Background task output was not parseable" });
+            appendLogLine(workspaceRoot, jobId, "Background task completed (output not parseable).");
           }
-
+        } else {
           updateJob(workspaceRoot, {
-            id: jobId, status: "completed", phase: "completed", pid: null, completedAt,
-            result: parsed.response || "",
-            cost: null, // agy doesn't return cost
-            duration: parsed.duration_seconds || null,
-            sessionId: parsed.conversation_id || null,
-            errorMessage: null
+            id: jobId, status: "failed", phase: "failed", pid: null, completedAt,
+            errorMessage: `Background process exited with code ${code}`
           });
-          appendLogLine(workspaceRoot, jobId, "Background task completed.");
-        } catch {
-          updateJob(workspaceRoot, { id: jobId, status: "failed", phase: "failed", pid: null, completedAt, errorMessage: "Background task output was not parseable" });
-          appendLogLine(workspaceRoot, jobId, "Background task completed (output not parseable).");
+          appendLogLine(workspaceRoot, jobId, `Background task failed with exit code ${code}.`);
         }
-      } else {
-        updateJob(workspaceRoot, {
-          id: jobId, status: "failed", phase: "failed", pid: null, completedAt,
-          errorMessage: `Background process exited with code ${code}`
-        });
-        appendLogLine(workspaceRoot, jobId, `Background task failed with exit code ${code}.`);
+      } finally {
+        // Clean up result file
+        try { if (resultFile) fs.unlinkSync(resultFile); } catch { /* ignore */ }
       }
     });
 
     return {
       content: [{
         type: "text",
-        text: `Task started in background.\n\n**Job ID:** ${jobId}\n**Status:** running\n**Phase:** executing\n**Model:** ${model || "default"}\n\nCheck status with \`agy_check\` or use \`agy_check --wait\` to wait for completion.`
+        text: `Task started in background.\n\n**Job ID:** ${jobId}\n**Status:** running\n**Phase:** executing\n**Model:** ${model || "default"}\n**Timeout:** ${timeout || "5m0s"}\n\nCheck status with \`agy_check\` or use \`agy_check --wait\` to wait for completion.`
       }]
     };
   }
@@ -379,7 +390,7 @@ function handleDelegate(params) {
     return {
       content: [{
         type: "text",
-        text: `## Task Completed\n\n**Job ID:** ${jobId}\n**Duration:** ${formatDuration(result.duration)}\n**Cost:** —\n**Model:** ${result.model || model || "default"}\n\n### Result\n${result.result}\n\n${filesSection}\n\n---\n💡 Run \`/agy:review\` to review the changes, or \`/agy:review --adversarial\` for an adversarial review.`
+        text: `## Task Completed\n\n**Job ID:** ${jobId}\n**Duration:** ${formatDuration(result.duration)}\n**Cost:** —\n**Model:** ${result.model || model || "default"}\n**Timeout:** ${timeout || "5m0s"}\n\n### Result\n${result.result}\n\n${filesSection}\n\n---\n💡 Run \`/agy:review\` to review the changes, or \`/agy:review --adversarial\` for an adversarial review.`
       }]
     };
   } else {
@@ -450,6 +461,7 @@ function handleListModels() {
 function handleCheck(params) {
   const cwd = getCwd(params);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  lastWorkspaceRoot = workspaceRoot;
   let jobs = listJobs(workspaceRoot);
 
   if (params.session === true) {
@@ -500,14 +512,15 @@ function handleCheck(params) {
         job = fresh;
         break;
       }
-      // Cross-platform sleep: use Atomics.wait on SharedArrayBuffer (sub-ms precision not needed)
-      // Fallback for environments without SharedArrayBuffer: busy-wait
+      // Cross-platform sleep: prefer Atomics.wait on SharedArrayBuffer;
+      // fallback: spawn a short-lived node process to sleep without CPU burn
       try {
         const buf = new Int32Array(new SharedArrayBuffer(4));
         Atomics.wait(buf, 0, 0, 2000);
       } catch {
-        const deadline = Date.now() + 2000;
-        while (Date.now() < deadline) { /* busy-wait */ }
+        try {
+          spawnSync("node", ["-e", "setTimeout(()=>process.exit(0),2000)"], { timeout: 3000, stdio: "ignore", windowsHide: true });
+        } catch { /* last resort: accept brief CPU spin */ }
       }
     }
     if (job && (job.status === "running" || job.status === "queued")) {
@@ -538,7 +551,7 @@ function handleCheck(params) {
   return {
     content: [{
       type: "text",
-      text: `## Job: ${job.id}\n\n**Status:** ${job.status}\n**Phase:** ${phase} (${phaseDescription(phase)})\n**Task:** ${job.task || "—"}\n**Model:** ${job.model || "—"}\n**Duration:** ${formatDuration(job.duration)}\n**Cost:** —\n**Session:** ${job.sessionId || "—"}\n${elapsedSection}**Started:** ${job.startedAt || job.createdAt || "—"}\n**Completed:** ${job.completedAt || "—"}\n\n${resultSection}\n\n${filesSection}\n\n${progressSection}`
+      text: `## Job: ${job.id}\n\n**Status:** ${job.status}\n**Phase:** ${phase} (${phaseDescription(phase)})\n**Task:** ${job.task || "—"}\n**Model:** ${job.model || "—"}\n**Duration:** ${formatDuration(job.duration)}\n**Cost:** —\n**Timeout:** ${job.timeout || "5m0s"}\n**Session:** ${job.sessionId || "—"}\n${elapsedSection}**Started:** ${job.startedAt || job.createdAt || "—"}\n**Completed:** ${job.completedAt || "—"}\n\n${resultSection}\n\n${filesSection}\n\n${progressSection}`
     }]
   };
 }
@@ -547,6 +560,7 @@ function handleCheck(params) {
 function handleCancel(params) {
   const cwd = getCwd(params);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  lastWorkspaceRoot = workspaceRoot;
   const jobs = listJobs(workspaceRoot);
 
   const jobIdOrPrefix = params.job;
@@ -716,6 +730,7 @@ Before finalizing, check that each finding is:
 function handleReview(params) {
   const cwd = getCwd(params);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  lastWorkspaceRoot = workspaceRoot;
   const jobs = listJobs(workspaceRoot);
 
   const jobIdOrPrefix = params.job;
@@ -912,6 +927,35 @@ function handleMessage(msg) {
     }
   }
 }
+
+// ─── Graceful Shutdown ──────────────────────────────────────────────────────
+
+function gracefulShutdown(signal) {
+  if (lastWorkspaceRoot) {
+    try {
+      const jobs = listJobs(lastWorkspaceRoot);
+      for (const job of jobs) {
+        if (job.status === "running" || job.status === "queued") {
+          if (job.pid) {
+            try { terminateProcessTree(job.pid); } catch { /* ignore */ }
+          }
+          upsertJob(lastWorkspaceRoot, {
+            id: job.id,
+            status: "cancelled",
+            phase: "cancelled",
+            pid: null,
+            completedAt: new Date().toISOString(),
+            errorMessage: `Cancelled: server received ${signal}`
+          });
+        }
+      }
+    } catch { /* best effort */ }
+  }
+  process.exit(0);
+}
+
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 
 // ─── Main ───────────────────────────────────────────────────────────────────
 

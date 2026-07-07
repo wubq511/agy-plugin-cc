@@ -7,7 +7,9 @@ const READ_ONLY_PREFIX = "Do NOT modify any files. This is a read-only analysis 
 
 /**
  * Parse a Go-style duration string (e.g., "5m0s", "30s", "1h30m") to milliseconds.
- * Returns null if parsing fails.
+ * Returns null if parsing fails or total is zero ("0s" → null → caller falls back to default).
+ * Zero-duration is intentionally null because a 0ms spawnSync timeout would be meaningless;
+ * the caller should use its own default when parseDurationToMs returns null.
  */
 function parseDurationToMs(str) {
   if (!str || typeof str !== "string") return null;
