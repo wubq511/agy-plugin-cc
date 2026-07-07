@@ -1,0 +1,11 @@
+{
+  "name": "agy-plugin-cc",
+  "owner": { "name": "Robert Wu" },
+  "plugins": [
+    {
+      "name": "agy",
+      "source": "./plugins/agy",
+      "description": "Delegate coding tasks to Antigravity CLI from Claude Code, then review the results."
+    }
+  ]
+}

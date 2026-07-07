@@ -1,0 +1,11 @@
+{
+  "name": "agy",
+  "displayName": "Antigravity",
+  "version": "0.1.0",
+  "description": "Delegate coding tasks to Antigravity CLI from Claude Code, then review the results.",
+  "author": { "name": "Robert Wu" },
+  "license": "MIT",
+  "keywords": ["antigravity", "agy", "delegate", "review", "code-review"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

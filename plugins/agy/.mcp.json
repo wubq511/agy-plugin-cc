@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agy-companion": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs"]
+    }
+  }
+}
