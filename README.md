@@ -32,7 +32,7 @@
 
 ```bash
 # 1. 添加本仓库作为 marketplace
-claude plugin marketplace add <your-github-org>/agy-plugin-cc
+claude plugin marketplace add wubq511/agy-plugin-cc
 
 # 2. 安装插件
 claude plugin install agy@agy-plugin-cc
@@ -43,6 +43,18 @@ claude plugin install agy@agy-plugin-cc
 ```
 /agy:setup
 ```
+
+### 更新
+
+```bash
+# 更新 marketplace 缓存（拉取最新代码）
+claude plugin marketplace update agy-plugin-cc
+
+# 重新安装以应用更新
+claude plugin install agy@agy-plugin-cc
+```
+
+也可以在 Claude Code 会话中用 `/plugin update agy@agy-plugin-cc` 一键更新。
 
 ## 使用
 
