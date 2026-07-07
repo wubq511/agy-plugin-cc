@@ -28,7 +28,6 @@
  * - Reviewer: Claude Code (not Codex)
  */
 
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -46,7 +45,6 @@ import {
 // ─── MCP Protocol ───────────────────────────────────────────────────────────
 
 const PROTOCOL_VERSION = "2025-03-26";
-let nextId = 1;
 
 function sendMessage(msg) {
   process.stdout.write(`${JSON.stringify(msg)}\n`);
@@ -58,10 +56,6 @@ function sendResponse(id, result) {
 
 function sendError(id, code, message) {
   sendMessage({ jsonrpc: "2.0", id, error: { code, message } });
-}
-
-function sendNotification(method, params = {}) {
-  sendMessage({ jsonrpc: "2.0", method, params });
 }
 
 function logError(msg) {
@@ -385,7 +379,7 @@ function handleDelegate(params) {
     return {
       content: [{
         type: "text",
-        text: `## Task Completed\n\n**Job ID:** ${jobId}\n**Duration:** ${formatDuration(result.duration)}\n**Model:** ${result.model || model || "default"}\n\n### Result\n${result.result}\n\n${filesSection}\n\n---\n💡 Run \`/agy:review\` to review the changes, or \`/agy:review --adversarial\` for an adversarial review.`
+        text: `## Task Completed\n\n**Job ID:** ${jobId}\n**Duration:** ${formatDuration(result.duration)}\n**Cost:** —\n**Model:** ${result.model || model || "default"}\n\n### Result\n${result.result}\n\n${filesSection}\n\n---\n💡 Run \`/agy:review\` to review the changes, or \`/agy:review --adversarial\` for an adversarial review.`
       }]
     };
   } else {
@@ -420,13 +414,15 @@ function handleListModels() {
       content: [{
         type: "text",
         text: `## Available Antigravity Models\n\n⚠️ Could not retrieve models: ${result.error}\n\nMake sure \`agy\` is installed and available on PATH. Run \`/agy:setup\` to check.`
-      }]
+      }],
+      isError: true
     };
   }
 
   if (result.models.length === 0) {
     return {
-      content: [{ type: "text", text: "## Available Antigravity Models\n\nNo models found. Run `agy models` manually to check." }]
+      content: [{ type: "text", text: "## Available Antigravity Models\n\nNo models found. Run `agy models` manually to check." }],
+      isError: true
     };
   }
 
@@ -504,7 +500,15 @@ function handleCheck(params) {
         job = fresh;
         break;
       }
-      spawnSync("sleep", ["2"]);
+      // Cross-platform sleep: use Atomics.wait on SharedArrayBuffer (sub-ms precision not needed)
+      // Fallback for environments without SharedArrayBuffer: busy-wait
+      try {
+        const buf = new Int32Array(new SharedArrayBuffer(4));
+        Atomics.wait(buf, 0, 0, 2000);
+      } catch {
+        const deadline = Date.now() + 2000;
+        while (Date.now() < deadline) { /* busy-wait */ }
+      }
     }
     if (job && (job.status === "running" || job.status === "queued")) {
       return { content: [{ type: "text", text: `Job ${job.id} is still running after 4 minutes. Use \`agy_check\` to check again later.` }] };
@@ -534,7 +538,7 @@ function handleCheck(params) {
   return {
     content: [{
       type: "text",
-      text: `## Job: ${job.id}\n\n**Status:** ${job.status}\n**Phase:** ${phase} (${phaseDescription(phase)})\n**Task:** ${job.task || "—"}\n**Model:** ${job.model || "—"}\n**Duration:** ${formatDuration(job.duration)}\n**Session:** ${job.sessionId || "—"}\n${elapsedSection}**Started:** ${job.startedAt || job.createdAt || "—"}\n**Completed:** ${job.completedAt || "—"}\n\n${resultSection}\n\n${filesSection}\n\n${progressSection}`
+      text: `## Job: ${job.id}\n\n**Status:** ${job.status}\n**Phase:** ${phase} (${phaseDescription(phase)})\n**Task:** ${job.task || "—"}\n**Model:** ${job.model || "—"}\n**Duration:** ${formatDuration(job.duration)}\n**Cost:** —\n**Session:** ${job.sessionId || "—"}\n${elapsedSection}**Started:** ${job.startedAt || job.createdAt || "—"}\n**Completed:** ${job.completedAt || "—"}\n\n${resultSection}\n\n${filesSection}\n\n${progressSection}`
     }]
   };
 }
@@ -813,8 +817,16 @@ function handleSetup() {
   lines.push(`**Session ID:** ${SESSION_ID}`);
 
   if (agyStatus.available && nodeStatus.available) {
-    lines.push("\n✅ Plugin ready\n");
-    lines.push("No issues found. Use `/agy:delegate` to start delegating tasks.");
+    // Check if agy can actually run (auth/API key configured)
+    const modelsResult = getAvailableModels(workspaceRoot);
+    if (modelsResult.ok && modelsResult.models.length > 0) {
+      lines.push("\n✅ Plugin ready\n");
+      lines.push("No issues found. Use `/agy:delegate` to start delegating tasks.");
+    } else {
+      lines.push("\n⚠️ Plugin partially ready");
+      lines.push("Antigravity CLI is installed but may not be authenticated or configured.");
+      lines.push("Run `agy models` manually to verify. If it fails, check your API key configuration.");
+    }
   } else {
     lines.push("\n❌ Setup incomplete");
     if (!agyStatus.available) {

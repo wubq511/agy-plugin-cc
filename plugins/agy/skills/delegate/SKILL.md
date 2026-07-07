@@ -26,7 +26,7 @@ Send a coding task to Antigravity CLI for execution. Antigravity runs in a separ
    - `dangerouslySkipPermissions`: set to `true` to let Antigravity write without confirmation (default: false)
    - `resume`: set to `true` to continue the last Antigravity session (adds `--continue`)
    - `resumeSession`: pass a conversation ID to resume a specific Antigravity session (adds `--conversation <id>`)
-   - `timeout`: set a custom timeout duration (e.g., "10m0s"), mapped to `--print-timeout`
+   - `timeout`: set a custom timeout duration (e.g., "5m0s", "10m0s"), mapped to `--print-timeout` (default: 5m0s)
 
 3. **Present results** to the user when the task completes.
 

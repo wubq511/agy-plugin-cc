@@ -23,20 +23,38 @@ export function binaryAvailable(command, args = [], options = {}) {
 }
 
 /**
- * Terminate a process tree (pid + all children) by sending SIGTERM.
- * On macOS/Linux, use process.kill with negative pid to kill the group.
+ * Terminate a process tree (pid + all children).
+ * - macOS/Linux: process.kill with negative pid to kill the process group
+ * - Windows: process.kill(pid, 0) to check then taskkill /T /F for tree kill
  */
+const IS_WIN = process.platform === "win32";
+
 export function terminateProcessTree(pid) {
   if (!pid || !Number.isFinite(pid)) {
     return;
   }
-  try {
-    process.kill(-pid, "SIGTERM");
-  } catch {
+  if (IS_WIN) {
+    // Windows: use taskkill for tree kill (kills process + descendants)
     try {
-      process.kill(pid, "SIGTERM");
+      spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], {
+        timeout: 5000,
+        windowsHide: true,
+        stdio: "ignore"
+      });
     } catch {
-      // already dead
+      // fallback: try plain kill
+      try { process.kill(pid); } catch { /* already dead */ }
+    }
+  } else {
+    // Unix: negative pid kills the process group
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+        // already dead
+      }
     }
   }
 }

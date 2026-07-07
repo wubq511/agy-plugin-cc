@@ -6,6 +6,27 @@ import { binaryAvailable } from "./process.mjs";
 const READ_ONLY_PREFIX = "Do NOT modify any files. This is a read-only analysis task. ";
 
 /**
+ * Parse a Go-style duration string (e.g., "5m0s", "30s", "1h30m") to milliseconds.
+ * Returns null if parsing fails.
+ */
+function parseDurationToMs(str) {
+  if (!str || typeof str !== "string") return null;
+  let totalMs = 0;
+  let remaining = str.trim();
+  const pattern = /^(\d+)([hms])/;
+  let match;
+  while ((match = remaining.match(pattern))) {
+    const value = parseInt(match[1], 10);
+    const unit = match[2];
+    if (unit === "h") totalMs += value * 3600 * 1000;
+    else if (unit === "m") totalMs += value * 60 * 1000;
+    else if (unit === "s") totalMs += value * 1000;
+    remaining = remaining.slice(match[0].length);
+  }
+  return remaining.length === 0 && totalMs > 0 ? totalMs : null;
+}
+
+/**
  * Build the agy CLI command args for a given task and options.
  *
  * Key differences from claude-runner.mjs:
@@ -69,11 +90,16 @@ export function runAntigravitySync(task, options = {}) {
   const args = buildAntigravityArgs(task, options);
   const cwd = options.cwd || process.cwd();
 
+  // Set spawnSync timeout: if user specified --print-timeout, use that + 30s buffer;
+  // otherwise default to 15 minutes. This ensures spawnSync doesn't kill agy prematurely.
+  const userTimeoutMs = parseDurationToMs(options.timeout);
+  const spawnTimeout = userTimeoutMs ? userTimeoutMs + 30_000 : 15 * 60 * 1000;
+
   const result = spawnSync("agy", args, {
     cwd, // agy ignores this, but set it anyway for consistency
     env: process.env,
     encoding: "utf8",
-    timeout: options.timeoutMs || 15 * 60 * 1000,
+    timeout: spawnTimeout,
     stdio: "pipe",
     maxBuffer: 50 * 1024 * 1024
   });
@@ -196,7 +222,8 @@ export function getAvailableModels(cwd) {
     });
 
     if (result.status !== 0 || !result.stdout) {
-      return { ok: false, models: [], error: "Failed to run `agy models`" };
+      const detail = (result.stderr || "").trim() || `exit code ${result.status}`;
+      return { ok: false, models: [], error: `Failed to run \`agy models\`: ${detail}` };
     }
 
     // Parse model list — each line is a model name
